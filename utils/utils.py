@@ -148,14 +148,14 @@ def draw_court(frames, interpolated_points_per_frame):
             if not None in p:
                 if len(corner_points) < 4:
                     corner_points.append(p)
-                image = cv2.circle(image, (int(p[0]), int(p[1])),
-                                  radius=0, color=(0, 0, 255), thickness=10)
-                image = cv2.putText(image, f"{pt_idx + 1}", (int(p[0]), int(p[1])),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+                # image = cv2.circle(image, (int(p[0]), int(p[1])),
+                #                   radius=0, color=(0, 0, 255), thickness=10)
+                # image = cv2.putText(image, f"{pt_idx + 1}", (int(p[0]), int(p[1])),
+                #                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
 
         for idx, p1 in enumerate(corner_points[:-1]):
             for p2 in corner_points[idx + 1:]:
-                image = cv2.line(image, (int(p1[0]), int(p1[1])), (int(p2[0]), int(p2[1])), (0, 255, 0), 2)
+                image = cv2.line(image, (int(p1[0]), int(p1[1])), (int(p2[0]), int(p2[1])), (222, 74, 69), 5)
 
         frames_upd.append(image)
 
@@ -203,7 +203,7 @@ def draw_ball(frames, ball_track, trace):
                 if ball_track[num-i][0]:
                     x = int(ball_track[num-i][0])
                     y = int(ball_track[num-i][1])
-                    frame = cv2.circle(frame, (x,y), radius=0, color=(255, 255, 255), thickness=10-i)
+                    frame = cv2.circle(frame, (x,y), radius=0, color=(127, 0, 255), thickness=10-i)
                 else:
                     break
         output_frames.append(frame)
@@ -244,7 +244,7 @@ def draw_virtual_court(court_img, mapped_ball_points):
         if ball_mapped is not None:
             x = int(ball_mapped[0])
             y = int(ball_mapped[1])
-            cv2.circle(curr_frame, (x, y), radius=10, color=(0,255,255), thickness=-1)
+            cv2.circle(curr_frame, (x, y), radius=10, color=(127, 0, 255), thickness=-1)
         court_frames.append(curr_frame)
     return court_frames
 
@@ -364,6 +364,14 @@ def euclidean_distance(p1, p2):
     x1, y1 = p1
     x2, y2 = p2
     return ((x1 - x2) ** 2 + (y1 - y2) ** 2) ** 0.5
+
+def tether_players_to_points(player_tracker, frame_points, player_detections, homography, homographies, frames, interpolated_points_per_frame):
+    _, distances = player_tracker.choose_players(frame_points, player_detections[0], homography, homographies[0])
+    for frame_num, frame in enumerate(frames):
+        for track_id, min_distance, min_point in distances:
+            point = interpolated_points_per_frame[frame_num][min_point]
+            if track_id in player_detections[frame_num].keys():
+                frame = cv2.line(frame, bbox_feet(player_detections[frame_num][track_id]), (int(point[0]), int(point[1])), (255, 0, 0))
 
 
 

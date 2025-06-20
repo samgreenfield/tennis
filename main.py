@@ -59,14 +59,14 @@ def main():
     frame_points = infer_court(frames, OUTPUT_WIDTH, OUTPUT_HEIGHT, court_model, device)
     interpolated_points_per_frame = interpolate_court_points_per_frame(frames, frame_points)
 
-    # Track players
-    player_tracker = PlayerTracker(args.player_tracking_model_path)
-    player_detections = player_tracker.detect_frames(frames)
-    player_detections = player_tracker.choose_and_filter_players(frame_points, player_detections)
-
     # Compute transform to 2D
     homography = Homography()
     homographies = frame_homographies(frames, interpolated_points_per_frame, homography)
+
+    # Track players
+    player_tracker = PlayerTracker(args.player_tracking_model_path)
+    player_detections = player_tracker.detect_frames(frames)
+    player_detections = player_tracker.choose_and_filter_players(frame_points, player_detections, homography, homographies[0])
 
     # Map ball location to 2D with transform
     mapped_ball_points = map_ball_points(ball_track, homography, homographies)
@@ -79,7 +79,10 @@ def main():
     # Draw ball and court
     frames = draw_ball(frames, ball_track, trace = 1)
     frames = draw_court(frames, interpolated_points_per_frame)
-    # frames = player_tracker.draw_bboxes(frames, player_detections)
+    frames = player_tracker.draw_bboxes(frames, player_detections)
+
+    # # Draw a line connecting tracked players to the points they are tracked from
+    # tether_players_to_points(player_tracker, frame_points, player_detections, homography, homographies, frames, interpolated_points_per_frame)
 
     combined_video = combine_frames(live_court_frames, frames, virtual_court_frames)
 
