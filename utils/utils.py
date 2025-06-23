@@ -162,9 +162,9 @@ def draw_court(frames, interpolated_points_per_frame):
     return frames_upd
 
 def remove_outliers(ball_track, dists, max_dist=100, min_dist=1.0, min_static_frames=5):
+    """Basic outlier removal (legacy function)"""
     outliers = set(np.where(np.array(dists) > max_dist)[0])
     static_counter = 0
-    last_valid_pt = None
     
     for i in range(1, len(ball_track)):
         pt = ball_track[i]
@@ -192,6 +192,215 @@ def remove_outliers(ball_track, dists, max_dist=100, min_dist=1.0, min_static_fr
         if i < len(ball_track):
             ball_track[i] = (None, None)
     return ball_track
+
+def remove_outliers_advanced(ball_track, dists, max_velocity=150, max_acceleration=50, 
+                           smoothing_window=5, confidence_threshold=0.7, debug=False):
+    """
+    Advanced outlier removal with velocity and acceleration constraints
+    
+    Args:
+        ball_track: List of (x, y) ball positions or (None, None)
+        dists: List of distances between consecutive points
+        max_velocity: Maximum allowed velocity (pixels per frame)
+        max_acceleration: Maximum allowed acceleration change
+        smoothing_window: Window size for smoothing
+        confidence_threshold: Minimum confidence to keep a point
+        debug: Print debug information
+    """
+    if len(ball_track) < 3:
+        return ball_track
+    
+    cleaned_track = ball_track.copy()
+    
+    # Step 1: Remove obvious distance outliers
+    if debug:
+        print("🔍 Step 1: Removing distance outliers...")
+    
+    distance_threshold = np.percentile([d for d in dists if d > 0], 95)  # 95th percentile
+    distance_outliers = 0
+    
+    for i, dist in enumerate(dists):
+        if dist > distance_threshold:
+            if i < len(cleaned_track):
+                if debug:
+                    print(f"   Removed distance outlier at frame {i}: dist={dist:.1f}")
+                cleaned_track[i] = (None, None)
+                distance_outliers += 1
+    
+    # Step 2: Velocity-based filtering
+    if debug:
+        print("🔍 Step 2: Velocity-based filtering...")
+    
+    velocities = []
+    velocity_outliers = 0
+    
+    for i in range(1, len(cleaned_track)):
+        prev_pt = cleaned_track[i-1]
+        curr_pt = cleaned_track[i]
+        
+        if prev_pt[0] is not None and curr_pt[0] is not None:
+            vx = curr_pt[0] - prev_pt[0]
+            vy = curr_pt[1] - prev_pt[1]
+            v_mag = np.sqrt(vx**2 + vy**2)
+            velocities.append(v_mag)
+            
+            if v_mag > max_velocity:
+                if debug:
+                    print(f"   Removed velocity outlier at frame {i}: v={v_mag:.1f}")
+                cleaned_track[i] = (None, None)
+                velocity_outliers += 1
+        else:
+            velocities.append(0)
+    
+    # Step 3: Acceleration-based filtering
+    if debug:
+        print("🔍 Step 3: Acceleration-based filtering...")
+    
+    acceleration_outliers = 0
+    
+    for i in range(1, len(velocities)):
+        if velocities[i] > 0 and velocities[i-1] > 0:
+            acceleration = abs(velocities[i] - velocities[i-1])
+            
+            if acceleration > max_acceleration:
+                frame_idx = i + 1  # +1 because velocities array is offset
+                if frame_idx < len(cleaned_track):
+                    if debug:
+                        print(f"   Removed acceleration outlier at frame {frame_idx}: a={acceleration:.1f}")
+                    cleaned_track[frame_idx] = (None, None)
+                    acceleration_outliers += 1
+    
+    # Step 4: Temporal consistency check
+    if debug:
+        print("🔍 Step 4: Temporal consistency check...")
+    
+    consistency_outliers = 0
+    
+    for i in range(2, len(cleaned_track) - 2):
+        curr_pt = cleaned_track[i]
+        if curr_pt[0] is None:
+            continue
+        
+        # Check if current point is consistent with surrounding points
+        surrounding_points = []
+        for j in range(max(0, i-2), min(len(cleaned_track), i+3)):
+            if j != i and cleaned_track[j][0] is not None:
+                surrounding_points.append(cleaned_track[j])
+        
+        if len(surrounding_points) >= 2:
+            # Calculate expected position based on surrounding points
+            avg_x = np.mean([pt[0] for pt in surrounding_points])
+            avg_y = np.mean([pt[1] for pt in surrounding_points])
+            
+            # Check distance from expected position
+            dist_from_expected = np.sqrt((curr_pt[0] - avg_x)**2 + (curr_pt[1] - avg_y)**2)
+            
+            # If too far from expected position, mark as outlier
+            if dist_from_expected > max_velocity:
+                if debug:
+                    print(f"   Removed consistency outlier at frame {i}: dist_from_expected={dist_from_expected:.1f}")
+                cleaned_track[i] = (None, None)
+                consistency_outliers += 1
+    
+    # Step 5: Apply smoothing to remaining points
+    if debug:
+        print("🔍 Step 5: Applying smoothing...")
+    
+    smoothed_track = apply_smoothing(cleaned_track, window_size=smoothing_window)
+    
+    if debug:
+        total_removed = distance_outliers + velocity_outliers + acceleration_outliers + consistency_outliers
+        total_valid = sum(1 for pt in ball_track if pt[0] is not None)
+        remaining_valid = sum(1 for pt in smoothed_track if pt[0] is not None)
+        print(f"📊 Outlier removal summary:")
+        print(f"   Distance outliers: {distance_outliers}")
+        print(f"   Velocity outliers: {velocity_outliers}")
+        print(f"   Acceleration outliers: {acceleration_outliers}")
+        print(f"   Consistency outliers: {consistency_outliers}")
+        print(f"   Total removed: {total_removed}")
+        print(f"   Valid points: {total_valid} → {remaining_valid}")
+    
+    return smoothed_track
+
+def apply_smoothing(ball_track, window_size=5):
+    """
+    Apply temporal smoothing to ball trajectory to reduce jitter
+    """
+    if window_size < 3:
+        return ball_track
+    
+    smoothed_track = ball_track.copy()
+    half_window = window_size // 2
+    
+    for i in range(len(ball_track)):
+        curr_pt = ball_track[i]
+        if curr_pt[0] is None:
+            continue
+        
+        # Collect valid points in window
+        window_points = []
+        for j in range(max(0, i - half_window), min(len(ball_track), i + half_window + 1)):
+            if ball_track[j][0] is not None:
+                window_points.append(ball_track[j])
+        
+        # If we have enough points for smoothing
+        if len(window_points) >= 3:
+            # Use median smoothing (more robust than mean)
+            smoothed_x = np.median([pt[0] for pt in window_points])
+            smoothed_y = np.median([pt[1] for pt in window_points])
+            smoothed_track[i] = (smoothed_x, smoothed_y)
+    
+    return smoothed_track
+
+def interpolate_missing_points(ball_track, max_gap=10):
+    """
+    Interpolate missing points in ball trajectory for small gaps
+    
+    Args:
+        ball_track: List of ball positions
+        max_gap: Maximum gap size to interpolate (frames)
+    """
+    interpolated_track = ball_track.copy()
+    
+    i = 0
+    while i < len(interpolated_track):
+        if interpolated_track[i][0] is None:
+            # Find the start and end of the gap
+            gap_start = i
+            gap_end = i
+            
+            # Find end of gap
+            while gap_end < len(interpolated_track) and interpolated_track[gap_end][0] is None:
+                gap_end += 1
+            
+            gap_size = gap_end - gap_start
+            
+            # Only interpolate small gaps
+            if gap_size <= max_gap:
+                # Find valid points before and after gap
+                before_pt = None
+                after_pt = None
+                
+                if gap_start > 0:
+                    before_pt = interpolated_track[gap_start - 1]
+                if gap_end < len(interpolated_track):
+                    after_pt = interpolated_track[gap_end]
+                
+                # Interpolate if we have both endpoints and they are valid
+                if (before_pt is not None and before_pt[0] is not None and 
+                    after_pt is not None and after_pt[0] is not None):
+                    
+                    for j in range(gap_start, gap_end):
+                        alpha = (j - gap_start + 1) / (gap_size + 1)
+                        interp_x = before_pt[0] * (1 - alpha) + after_pt[0] * alpha
+                        interp_y = before_pt[1] * (1 - alpha) + after_pt[1] * alpha
+                        interpolated_track[j] = (interp_x, interp_y)
+            
+            i = gap_end
+        else:
+            i += 1
+    
+    return interpolated_track
 
 def draw_ball(frames, ball_track, trace):
     output_frames = []
@@ -373,88 +582,379 @@ def tether_players_to_points(player_tracker, frame_points, player_detections, ho
             if track_id in player_detections[frame_num].keys():
                 frame = cv2.line(frame, bbox_feet(player_detections[frame_num][track_id]), (int(point[0]), int(point[1])), (255, 0, 0))
 
-
-
-
-
-
-
-
-
-
-
-
-
-# def build_straight_trajectory(mapped_ball_points, bounce_frames):
-#     N = len(mapped_ball_points)
+def detect_trajectory_changes(mapped_ball_points, velocity_threshold=15.0):
+    """
+    Detect potential bounce points by analyzing velocity changes in the mapped ball trajectory
+    """
+    vx_list = []
+    vy_list = []
+    v_norm_list = []
     
-#     # Sort bounce frames
-#     bounces_sorted = sorted(list(bounce_frames))
-    
-#     # Edge cases: always start at first and last frame
-#     if 0 not in bounces_sorted:
-#         bounces_sorted = [0] + bounces_sorted
-#     if (N-1) not in bounces_sorted:
-#         bounces_sorted = bounces_sorted + [N-1]
-    
-#     straightened_points = [None] * N
-    
-#     # For each segment between bounces:
-#     for i in range(len(bounces_sorted)-1):
-#         start_idx = bounces_sorted[i]
-#         end_idx = bounces_sorted[i+1]
+    for i in range(1, len(mapped_ball_points)):
+        pt_prev = mapped_ball_points[i-1]
+        pt_curr = mapped_ball_points[i]
         
-#         # Get (x, y) at start and end bounce
-#         start_pt = mapped_ball_points[start_idx]
-#         end_pt = mapped_ball_points[end_idx]
+        if pt_prev is None or pt_curr is None:
+            vx_list.append(0)
+            vy_list.append(0)
+            v_norm_list.append(0)
+            continue
         
-#         if start_pt is None or end_pt is None:
-#             # Skip segment if missing data
-#             continue
+        vx = pt_curr[0] - pt_prev[0]
+        vy = pt_curr[1] - pt_prev[1]
+        v_norm = np.sqrt(vx**2 + vy**2)
         
-#         x0, y0 = start_pt
-#         x1, y1 = end_pt
-        
-#         for f in range(start_idx, end_idx+1):
-#             alpha = (f - start_idx) / (end_idx - start_idx + 1e-8)
-#             x_interp = (1 - alpha) * x0 + alpha * x1
-#             y_interp = (1 - alpha) * y0 + alpha * y1
-#             straightened_points[f] = (x_interp, y_interp)
+        vx_list.append(vx)
+        vy_list.append(vy)
+        v_norm_list.append(v_norm)
     
-#     return straightened_points
+    # Detect significant velocity changes that indicate bounces
+    change_frames = []
+    
+    for i in range(2, len(v_norm_list)-2):
+        if v_norm_list[i] == 0:
+            continue
+            
+        # Look for sudden direction changes or velocity spikes
+        dv_before = abs(v_norm_list[i] - v_norm_list[i-1])
+        dv_after = abs(v_norm_list[i+1] - v_norm_list[i])
+        
+        if dv_before > velocity_threshold or dv_after > velocity_threshold:
+            change_frames.append(i+1)  # +1 because of lag
+    
+    return set(change_frames)
 
-# def detect_trajectory_changes(mapped_ball_points, velocity_threshold=10.0):
-#     vx_list = []
-#     vy_list = []
-#     v_norm_list = []
+def detect_bounces_advanced(mapped_ball_points, min_segment_length=5, angle_threshold=np.pi/4, 
+                          use_multiple_methods=True, debug=False):
+    """
+    Advanced bounce detection using multiple methods with adjustable sensitivity
     
-#     for i in range(1, len(mapped_ball_points)):
-#         pt_prev = mapped_ball_points[i-1]
-#         pt_curr = mapped_ball_points[i]
-        
-#         if pt_prev is None or pt_curr is None:
-#             vx_list.append(0)
-#             vy_list.append(0)
-#             v_norm_list.append(0)
-#             continue
-        
-#         vx = pt_curr[0] - pt_prev[0]
-#         vy = pt_curr[1] - pt_prev[1]
-#         v_norm = np.sqrt(vx**2 + vy**2)
-        
-#         vx_list.append(vx)
-#         vy_list.append(vy)
-#         v_norm_list.append(v_norm)
+    Args:
+        mapped_ball_points: List of (x,y) ball positions or None
+        min_segment_length: Minimum frames between bounces (prevents noise)
+        angle_threshold: Minimum angle change to consider a bounce (radians)
+        use_multiple_methods: Whether to combine multiple detection methods
+        debug: Print debug information
+    """
+    bounce_frames = []
     
-#     # Now compute delta_v
-#     delta_v = []
-#     change_frames = []
+    # First, find all non-None points
+    valid_points = []
+    valid_indices = []
     
-#     for i in range(1, len(v_norm_list)):
-#         dv = abs(v_norm_list[i] - v_norm_list[i-1])
-#         delta_v.append(dv)
+    for i, point in enumerate(mapped_ball_points):
+        if point is not None:
+            valid_points.append(point)
+            valid_indices.append(i)
+    
+    if len(valid_points) < 6:  # Need at least 6 points for analysis
+        return bounce_frames
+    
+    # Method 1: Direction change analysis
+    direction_bounces = []
+    for i in range(2, len(valid_points) - 2):
+        curr_idx = valid_indices[i]
         
-#         if dv > velocity_threshold:
-#             change_frames.append(i+1)  # because of lag
+        # Get points for analysis
+        prev2_point = valid_points[i-2]
+        prev_point = valid_points[i-1]
+        curr_point = valid_points[i]
+        next_point = valid_points[i+1]
+        next2_point = valid_points[i+2]
+        
+        # Calculate direction vectors (using wider window for stability)
+        v1 = np.array([curr_point[0] - prev2_point[0], curr_point[1] - prev2_point[1]])
+        v2 = np.array([next2_point[0] - curr_point[0], next2_point[1] - curr_point[1]])
+        
+        # Skip if vectors are too small
+        if np.linalg.norm(v1) < 2 or np.linalg.norm(v2) < 2:
+            continue
+        
+        # Calculate angle between vectors
+        cos_angle = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
+        cos_angle = np.clip(cos_angle, -1, 1)
+        angle = np.arccos(cos_angle)
+        
+        # Check for significant direction change
+        if angle > angle_threshold:
+            direction_bounces.append(curr_idx)
+            if debug:
+                print(f"Direction bounce at frame {curr_idx}, angle: {np.degrees(angle):.1f}°")
     
-#     return set(change_frames)
+    # Method 2: Velocity change analysis
+    velocity_bounces = []
+    velocities = []
+    
+    for i in range(1, len(valid_points)):
+        prev_point = valid_points[i-1]
+        curr_point = valid_points[i]
+        
+        vx = curr_point[0] - prev_point[0]
+        vy = curr_point[1] - prev_point[1]
+        v_mag = np.sqrt(vx**2 + vy**2)
+        velocities.append(v_mag)
+    
+    # Detect velocity spikes/drops
+    if len(velocities) > 4:
+        velocity_threshold = np.std(velocities) * 1.5  # Adaptive threshold
+        
+        for i in range(2, len(velocities) - 2):
+            curr_v = velocities[i]
+            prev_v = velocities[i-1]
+            next_v = velocities[i+1]
+            
+            # Look for sudden velocity changes
+            dv_before = abs(curr_v - prev_v)
+            dv_after = abs(next_v - curr_v)
+            
+            if dv_before > velocity_threshold or dv_after > velocity_threshold:
+                frame_idx = valid_indices[i+1]  # +1 because velocities array is offset
+                velocity_bounces.append(frame_idx)
+                if debug:
+                    print(f"Velocity bounce at frame {frame_idx}, dv: {max(dv_before, dv_after):.1f}")
+    
+    # Method 3: Y-direction analysis (vertical bounces)
+    y_bounces = []
+    if len(valid_points) > 4:
+        y_coords = [pt[1] for pt in valid_points]
+        
+        # Find local minima in Y direction (assuming Y increases downward)
+        for i in range(2, len(y_coords) - 2):
+            y_prev2 = y_coords[i-2]
+            y_prev = y_coords[i-1] 
+            y_curr = y_coords[i]
+            y_next = y_coords[i+1]
+            y_next2 = y_coords[i+2]
+            
+            # Check if current point is a local minimum
+            if (y_curr < y_prev and y_curr < y_next and 
+                y_curr < y_prev2 and y_curr < y_next2):
+                
+                # Additional check: ensure it's a significant minimum
+                min_depth = min(abs(y_curr - y_prev), abs(y_curr - y_next))
+                if min_depth > 5:  # Minimum depth threshold
+                    frame_idx = valid_indices[i]
+                    y_bounces.append(frame_idx)
+                    if debug:
+                        print(f"Y-direction bounce at frame {frame_idx}, depth: {min_depth:.1f}")
+    
+    # Combine methods
+    if use_multiple_methods:
+        # Combine all detected bounces
+        all_bounces = set(direction_bounces + velocity_bounces + y_bounces)
+        bounce_frames = sorted(list(all_bounces))
+    else:
+        # Use only direction change method (most reliable)
+        bounce_frames = direction_bounces
+    
+    # Filter out bounces that are too close together
+    filtered_bounces = []
+    for bounce in bounce_frames:
+        if not filtered_bounces or bounce - filtered_bounces[-1] > min_segment_length:
+            filtered_bounces.append(bounce)
+    
+    if debug:
+        print(f"Total bounces detected: {len(filtered_bounces)} at frames: {filtered_bounces}")
+    
+    return filtered_bounces
+
+def detect_bounces_with_sensitivity(mapped_ball_points, sensitivity="medium"):
+    """
+    Convenience function to detect bounces with different sensitivity levels
+    
+    Args:
+        mapped_ball_points: List of ball positions
+        sensitivity: "low", "medium", "high", or "max"
+    """
+    if sensitivity == "low":
+        return detect_bounces_advanced(mapped_ball_points, 
+                                     min_segment_length=8, 
+                                     angle_threshold=np.pi/3, 
+                                     use_multiple_methods=False)
+    elif sensitivity == "medium":
+        return detect_bounces_advanced(mapped_ball_points, 
+                                     min_segment_length=5, 
+                                     angle_threshold=np.pi/4, 
+                                     use_multiple_methods=True)
+    elif sensitivity == "high":
+        return detect_bounces_advanced(mapped_ball_points, 
+                                     min_segment_length=3, 
+                                     angle_threshold=np.pi/6, 
+                                     use_multiple_methods=True)
+    elif sensitivity == "max":
+        return detect_bounces_advanced(mapped_ball_points, 
+                                     min_segment_length=2, 
+                                     angle_threshold=np.pi/8, 
+                                     use_multiple_methods=True)
+    else:
+        raise ValueError(f"Unknown sensitivity: {sensitivity}")
+
+def create_straight_trajectory(mapped_ball_points, bounce_frames=None):
+    """
+    Create a straight-line trajectory between bounce points to correct for 3D perspective distortion
+    """
+    if bounce_frames is None:
+        bounce_frames = detect_bounces_advanced(mapped_ball_points)
+    
+    # Add start and end frames
+    bounce_frames = [0] + sorted(bounce_frames) + [len(mapped_ball_points) - 1]
+    
+    straightened_points = [None] * len(mapped_ball_points)
+    
+    # Process each segment between bounces
+    for i in range(len(bounce_frames) - 1):
+        start_frame = bounce_frames[i]
+        end_frame = bounce_frames[i + 1]
+        
+        # Find the actual ball positions at segment endpoints
+        start_point = None
+        end_point = None
+        
+        # Find start point
+        for f in range(start_frame, min(start_frame + 10, end_frame)):
+            if mapped_ball_points[f] is not None:
+                start_point = mapped_ball_points[f]
+                start_frame = f
+                break
+        
+        # Find end point
+        for f in range(end_frame, max(end_frame - 10, start_frame), -1):
+            if mapped_ball_points[f] is not None:
+                end_point = mapped_ball_points[f]
+                end_frame = f
+                break
+        
+        # If we have both points, create straight line interpolation
+        if start_point is not None and end_point is not None and start_frame < end_frame:
+            for f in range(start_frame, end_frame + 1):
+                # Linear interpolation between start and end points
+                alpha = (f - start_frame) / (end_frame - start_frame)
+                x = start_point[0] * (1 - alpha) + end_point[0] * alpha
+                y = start_point[1] * (1 - alpha) + end_point[1] * alpha
+                straightened_points[f] = (x, y)
+        else:
+            # If we can't find both endpoints, use original points
+            for f in range(start_frame, end_frame + 1):
+                if mapped_ball_points[f] is not None:
+                    straightened_points[f] = mapped_ball_points[f]
+    
+    return straightened_points
+
+def build_straight_trajectory(mapped_ball_points, change_frames=None):
+    """
+    Legacy function name for compatibility
+    """
+    return create_straight_trajectory(mapped_ball_points, change_frames)
+
+def draw_virtual_court_comparison(court_img, original_points, corrected_points, show_bounces=True, bounce_frames=None):
+    """
+    Draw both original (curved) and corrected (straight) trajectories for comparison
+    """
+    court_frames = []
+    
+    if bounce_frames is None:
+        bounce_frames = detect_bounces_advanced(original_points)
+    
+    for frame_idx in range(len(original_points)):
+        curr_frame = court_img.copy()
+        
+        # Draw original trajectory in red
+        if original_points[frame_idx] is not None:
+            x_orig = int(original_points[frame_idx][0])
+            y_orig = int(original_points[frame_idx][1])
+            cv2.circle(curr_frame, (x_orig, y_orig), radius=6, color=(0, 0, 255), thickness=-1)  # Red
+        
+        # Draw corrected trajectory in green
+        if corrected_points[frame_idx] is not None:
+            x_corr = int(corrected_points[frame_idx][0])
+            y_corr = int(corrected_points[frame_idx][1])
+            cv2.circle(curr_frame, (x_corr, y_corr), radius=8, color=(0, 255, 0), thickness=2)   # Green outline
+        
+        # Mark bounce points in yellow
+        if show_bounces and frame_idx in bounce_frames:
+            if corrected_points[frame_idx] is not None:
+                x_bounce = int(corrected_points[frame_idx][0])
+                y_bounce = int(corrected_points[frame_idx][1])
+                cv2.circle(curr_frame, (x_bounce, y_bounce), radius=12, color=(0, 255, 255), thickness=3)  # Yellow
+        
+        # Add legend
+        cv2.putText(curr_frame, "Red: Original", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        cv2.putText(curr_frame, "Green: Corrected", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        if show_bounces:
+            cv2.putText(curr_frame, "Yellow: Bounces", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+        
+        court_frames.append(curr_frame)
+    
+    return court_frames
+
+def analyze_bounce_detection(mapped_ball_points, output_path="bounce_analysis.png"):
+    """
+    Create a visualization showing bounce detection results with different sensitivity levels
+    """
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("⚠️ matplotlib not available - skipping bounce analysis visualization")
+        return False
+    
+    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+    fig.suptitle('Bounce Detection Analysis - Different Sensitivity Levels', fontsize=16, fontweight='bold')
+    
+    sensitivities = ['low', 'medium', 'high', 'max']
+    colors = ['blue', 'green', 'orange', 'red']
+    
+    # Extract valid points for plotting
+    valid_points = [(i, pt) for i, pt in enumerate(mapped_ball_points) if pt is not None]
+    if len(valid_points) < 10:
+        print("⚠️ Not enough valid ball points for bounce analysis")
+        return False
+    
+    frames, points = zip(*valid_points)
+    x_coords = [pt[0] for pt in points]
+    y_coords = [pt[1] for pt in points]
+    
+    for idx, (sensitivity, color) in enumerate(zip(sensitivities, colors)):
+        ax = axes[idx // 2, idx % 2]
+        
+        # Plot trajectory
+        ax.plot(x_coords, y_coords, 'gray', alpha=0.5, linewidth=1, label='Ball trajectory')
+        ax.scatter(x_coords, y_coords, c='lightblue', s=10, alpha=0.6)
+        
+        # Detect bounces with current sensitivity
+        bounces = detect_bounces_with_sensitivity(mapped_ball_points, sensitivity)
+        
+        # Mark detected bounces
+        bounce_x = []
+        bounce_y = []
+        for bounce_frame in bounces:
+            if mapped_ball_points[bounce_frame] is not None:
+                pt = mapped_ball_points[bounce_frame]
+                bounce_x.append(pt[0])
+                bounce_y.append(pt[1])
+        
+        if bounce_x:
+            ax.scatter(bounce_x, bounce_y, c=color, s=100, edgecolor='black', 
+                      linewidth=2, label=f'Bounces ({len(bounces)})', zorder=5)
+        
+        ax.set_title(f'{sensitivity.title()} Sensitivity\n{len(bounces)} bounces detected', 
+                    fontweight='bold')
+        ax.set_xlabel('Court X')
+        ax.set_ylabel('Court Y')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        
+        # Invert Y axis if needed (assuming Y increases downward)
+        ax.invert_yaxis()
+    
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    print(f"📊 Bounce analysis saved to: {output_path}")
+    
+    # Also print summary
+    print("\n🎾 Bounce Detection Summary:")
+    print("=" * 40)
+    for sensitivity in sensitivities:
+        bounces = detect_bounces_with_sensitivity(mapped_ball_points, sensitivity)
+        print(f"{sensitivity.ljust(8)}: {len(bounces)} bounces detected")
+    
+    return True
