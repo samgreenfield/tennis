@@ -19,14 +19,12 @@ def main():
         args.ball_model_path = 'models/ball_model.pt'
     if not args.court_model_path:
         args.court_model_path = 'models/court_model.pt'
-    if not args.bounce_model_path:
-        args.bounce_model_path = 'models/ctb_regr_bounce.cbm'
     if not args.player_tracking_model_path:
-        args.player_tracking_model_path = "models/yolo12n.pt"
+        args.player_tracking_model_path = "models/yolo12l.pt"
     if not args.output_path:
         args.output_path = os.path.join(os.path.dirname(args.input_path), "processed.mp4")
 
-    if not (os.path.isfile(args.ball_model_path) and os.path.isfile(args.court_model_path) and os.path.isfile(args.input_path) and os.path.isfile(args.bounce_model_path)):
+    if not (os.path.isfile(args.ball_model_path) and os.path.isfile(args.court_model_path) and os.path.isfile(args.input_path)):
         print("Bad path")
         return
 
@@ -57,7 +55,8 @@ def main():
 
     # Compute court points
     frame_points = infer_court(frames, OUTPUT_WIDTH, OUTPUT_HEIGHT, court_model, device)
-    interpolated_points_per_frame = interpolate_court_points_per_frame(frames, frame_points)
+    filled_frame_points = fill_missing_points_per_frame(frame_points)
+    interpolated_points_per_frame = interpolate_court_points_per_frame(frames, filled_frame_points)
 
     # Compute transform to 2D
     homography = Homography()
@@ -68,11 +67,12 @@ def main():
     player_detections = player_tracker.detect_frames(frames)
     player_detections = player_tracker.choose_and_filter_players(frame_points, player_detections, homography, homographies[0])
 
-    # Map ball location to 2D with transform
+    # Map ball and player locations to 2D with transform
     mapped_ball_points = map_ball_points(ball_track, homography, homographies)
+    mapped_player_detections = map_player_detections(player_detections, homography, homographies)
 
     # Draw ball on virtual court
-    virtual_court_frames = draw_virtual_court(homography.court_image, mapped_ball_points)
+    virtual_court_frames = draw_virtual_court(homography.court_image, mapped_ball_points, mapped_player_detections)
 
     live_court_frames = build_live_court_view(frames, interpolated_points_per_frame, homography)
 
@@ -93,20 +93,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-
-
-
-# # # Old bounce code:
-
-    # # Prepare for bounce detection
-    # x_ball = [ pt[0] if pt is not None else None for pt in mapped_ball_points]
-    # y_ball = [ pt[1] if pt is not None else None for pt in mapped_ball_points]
-    
-    # # Detect bounces
-    # bounce_detector = BounceDetector(path_model=args.bounce_model_path, threshold = .1)
-    # bounce_frames = bounce_detector.predict(x_ball, y_ball, smooth=True)
-    # change_frames = detect_trajectory_changes(mapped_ball_points, velocity_threshold=15)
-
-    # # Linear interpolation for virtual court
-    # straightened_points = build_straight_trajectory(mapped_ball_points, change_frames)
