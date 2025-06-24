@@ -1,1 +1,8 @@
 media/long_tennis.mp4
+utils/__pycache__
+stubs/ball_stub.pkl
+stubs/court_stub.pkl
+stubs/player_stub.pkl
+utils/__pycache__/__init__.cpython-311.pyc
+utils/__pycache__/ball_utils.cpython-311.pyc
+utils/__pycache__/court_utils.cpython-311.pyc

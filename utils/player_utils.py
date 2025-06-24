@@ -83,7 +83,7 @@ def map_player_detections(player_detections, homography_obj, homographies):
             if player_detections[frame_idx]:
                 frame_dict = {}
                 for track_id, player_detection in player_detections[frame_idx].items():
-                    player_point = bbox_center(player_detection)
+                    player_point = bbox_feet(player_detection)
                     player_mapped = homography_obj.map_point(player_point, H)
                     player_mapped = (int(player_mapped[0]), int(player_mapped[1]))
                     frame_dict[track_id] = player_mapped

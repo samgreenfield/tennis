@@ -128,7 +128,7 @@ def fill_missing_points(frame_pts):
         print("Not enough points to infer homography")
         return frame_pts
         
-    H, _ = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC)
+    H, _ = cv2.findHomography(src_pts, dst_pts)
 
     ref_pts_homo = cv2.perspectiveTransform(ref_court_pts.reshape(-1,1,2), H).reshape(-1,2)
 

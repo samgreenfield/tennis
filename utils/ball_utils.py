@@ -1,4 +1,5 @@
 import os, cv2, pickle, torch, numpy as np
+from copy import copy
 from tqdm import tqdm
 from utils import distance
 
@@ -51,37 +52,153 @@ def infer_ball(frames, model, device, stub_path = 'stubs/ball_stub.pkl'):
 
     return ball_track, dists 
 
-def remove_outliers(ball_track, dists, max_dist=100, min_dist=1.0, min_static_frames=5):
-    outliers = set(np.where(np.array(dists) > max_dist)[0])
-    static_counter = 0
-    last_valid_pt = None
+def remove_outliers(ball_track, dists, max_velocity=150, max_acceleration=50, smoothing_window=5, confidence_threshold=0.7):
+    if len(ball_track) < 3: return ball_track
+    cleaned_track = ball_track.copy()
     
-    for i in range(1, len(ball_track)):
-        pt = ball_track[i]
-        prev_pt = ball_track[i-1]
-        
-        # If current point is None, reset
-        if pt[0] is None or prev_pt[0] is None:
-            static_counter = 0
-            continue
-        # Distance between this point and previous
-        dx = pt[0] - prev_pt[0]
-        dy = pt[1] - prev_pt[1]
-        dist = np.sqrt(dx**2 + dy**2)
-        # If stuck
-        if dist < min_dist:
-            static_counter += 1
-        else:
-            static_counter = 0
-        # If stuck too long, remove this point
-        if static_counter >= min_static_frames:
-            ball_track[i] = (None, None)
-            static_counter = 0
+    # Distance thresholding
+    distance_threshold = np.percentile([d for d in dists if d > 0], 95)    
+    for i, dist in enumerate(dists):
+        if dist > distance_threshold:
+            if i < len(cleaned_track):
+                cleaned_track[i] = (None, None)
 
-    for i in outliers:
-        if i < len(ball_track):
-            ball_track[i] = (None, None)
-    return ball_track
+    # Velocity thresholding
+    velocities = []    
+    for i in range(1, len(cleaned_track)):
+        prev_pt = cleaned_track[i-1]
+        curr_pt = cleaned_track[i]
+        
+        if prev_pt[0] is not None and curr_pt[0] is not None:
+            vx = curr_pt[0] - prev_pt[0]
+            vy = curr_pt[1] - prev_pt[1]
+            v_mag = np.sqrt(vx**2 + vy**2)
+            velocities.append(v_mag)
+            
+            if v_mag > max_velocity:
+                cleaned_track[i] = (None, None)
+        else:
+            velocities.append(0)
+
+    # Acceleration thresholding    
+    for i in range(1, len(velocities)):
+        if velocities[i] > 0 and velocities[i-1] > 0:
+            acceleration = abs(velocities[i] - velocities[i-1])
+            
+            if acceleration > max_acceleration:
+                frame_idx = i + 1
+                if frame_idx < len(cleaned_track):
+                    cleaned_track[frame_idx] = (None, None)
+
+    # Check for consistency with neighbor points    
+    for i in range(2, len(cleaned_track) - 2):
+        curr_pt = cleaned_track[i]
+        if curr_pt[0] is None:
+            continue
+        
+        surrounding_points = []
+        for j in range(max(0, i-2), min(len(cleaned_track), i+3)):
+            if j != i and cleaned_track[j][0] is not None:
+                surrounding_points.append(cleaned_track[j])
+        
+        if len(surrounding_points) >= 2:
+            avg_x = np.mean([pt[0] for pt in surrounding_points])
+            avg_y = np.mean([pt[1] for pt in surrounding_points])
+            
+            dist_from_expected = np.sqrt((curr_pt[0] - avg_x)**2 + (curr_pt[1] - avg_y)**2)
+            if dist_from_expected > max_velocity:
+                cleaned_track[i] = (None, None)
+
+    smoothed_track = apply_smoothing(cleaned_track, window_size=smoothing_window)
+    return smoothed_track
+
+def apply_smoothing(ball_track, window_size=5):
+    if window_size < 3:
+        return ball_track
+    
+    smoothed_track = ball_track.copy()
+    half_window = window_size // 2
+    
+    for i in range(len(ball_track)):
+        curr_pt = ball_track[i]
+        if curr_pt[0] is None:
+            continue
+        
+        window_points = []
+        for j in range(max(0, i - half_window), min(len(ball_track), i + half_window + 1)):
+            if ball_track[j][0] is not None:
+                window_points.append(ball_track[j])
+        
+        if len(window_points) >= 3:
+            # NOTE: Maybe mean???
+            smoothed_x = np.median([pt[0] for pt in window_points])
+            smoothed_y = np.median([pt[1] for pt in window_points])
+            smoothed_track[i] = (smoothed_x, smoothed_y)
+    
+    return smoothed_track
+
+def interpolate_ball_track(ball_track):
+    interpolated_track = ball_track.copy()
+    xs = [pt[0] if pt[0] is not None else np.nan for pt in ball_track]
+    ys = [pt[1] if pt[1] is not None else np.nan for pt in ball_track]
+
+    xs_interp = np.copy(xs)
+    ys_interp = np.copy(ys)
+
+    n_frames = len(xs)
+    valid_idx = np.array([i for i in range(n_frames) if not np.isnan(xs[i])])
+    
+    if len(valid_idx) < 2:
+        return interpolated_track
+
+    xs_valid = np.array([xs[i] for i in valid_idx])
+    ys_valid = np.array([ys[i] for i in valid_idx])
+
+    xs_interp = np.interp(np.arange(n_frames), valid_idx, xs_valid)
+    ys_interp = np.interp(np.arange(n_frames), valid_idx, ys_valid)
+
+    for i in range(n_frames):
+        interpolated_track[i] = (xs_interp[i], ys_interp[i])
+
+    return interpolated_track
+
+def interpolate_missing_points(ball_track, max_gap=10):
+    interpolated_track = ball_track.copy()
+    
+    i = 0
+    while i < len(interpolated_track):
+        if interpolated_track[i][0] is None:
+            gap_start = i
+            gap_end = i
+            
+            while gap_end < len(interpolated_track) and interpolated_track[gap_end][0] is None:
+                gap_end += 1
+            
+            gap_size = gap_end - gap_start
+            
+            if gap_size <= max_gap:
+                before_pt = None
+                after_pt = None
+                
+                if gap_start > 0:
+                    before_pt = interpolated_track[gap_start - 1]
+                if gap_end < len(interpolated_track):
+                    after_pt = interpolated_track[gap_end]
+                
+                if (before_pt is not None and before_pt[0] is not None and 
+                    after_pt is not None and after_pt[0] is not None):
+                    
+                    for j in range(gap_start, gap_end):
+                        alpha = (j - gap_start + 1) / (gap_size + 1)
+                        interp_x = before_pt[0] * (1 - alpha) + after_pt[0] * alpha
+                        interp_y = before_pt[1] * (1 - alpha) + after_pt[1] * alpha
+                        interpolated_track[j] = (interp_x, interp_y)
+            
+            i = gap_end
+        else:
+            i += 1
+    
+    return interpolated_track
 
 def draw_ball(frames, ball_track, trace):
     output_frames = []
@@ -110,3 +227,189 @@ def map_ball_points(ball_track, homography_obj, homographies):
         else:
             mapped_ball_points.append(None)
     return mapped_ball_points
+
+def detect_trajectory_changes(mapped_ball_points, velocity_threshold=15.0):
+    vx_list = []
+    vy_list = []
+    v_norm_list = []
+    
+    for i in range(1, len(mapped_ball_points)):
+        pt_prev = mapped_ball_points[i-1]
+        pt_curr = mapped_ball_points[i]
+        
+        if pt_prev is None or pt_curr is None:
+            vx_list.append(0)
+            vy_list.append(0)
+            v_norm_list.append(0)
+            continue
+        
+        vx = pt_curr[0] - pt_prev[0]
+        vy = pt_curr[1] - pt_prev[1]
+        v_norm = np.sqrt(vx**2 + vy**2)
+        
+        vx_list.append(vx)
+        vy_list.append(vy)
+        v_norm_list.append(v_norm)
+    
+    change_frames = []
+    
+    for i in range(2, len(v_norm_list)-2):
+        if v_norm_list[i] == 0:
+            continue
+            
+        dv_before = abs(v_norm_list[i] - v_norm_list[i-1])
+        dv_after = abs(v_norm_list[i+1] - v_norm_list[i])
+        
+        if dv_before > velocity_threshold or dv_after > velocity_threshold:
+            change_frames.append(i+1)
+    
+    return set(change_frames)
+
+def detect_bounces(mapped_ball_points, min_segment_length=5, angle_threshold=np.pi/4):
+    bounce_frames = []
+    
+    valid_points = []
+    valid_indices = []
+    
+    for i, point in enumerate(mapped_ball_points):
+        if point is not None:
+            valid_points.append(point)
+            valid_indices.append(i)
+    
+    if len(valid_points) < 6:  
+        return bounce_frames
+    
+    # Direction change
+    direction_bounces = []
+    for i in range(2, len(valid_points) - 2):
+        curr_idx = valid_indices[i]
+        
+        prev2_point = valid_points[i-2]
+        prev_point = valid_points[i-1]
+        curr_point = valid_points[i]
+        next_point = valid_points[i+1]
+        next2_point = valid_points[i+2]
+        
+        v1 = np.array([curr_point[0] - prev2_point[0], curr_point[1] - prev2_point[1]])
+        v2 = np.array([next2_point[0] - curr_point[0], next2_point[1] - curr_point[1]])
+        
+        if np.linalg.norm(v1) < 2 or np.linalg.norm(v2) < 2:
+            continue
+        
+        cos_angle = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
+        cos_angle = np.clip(cos_angle, -1, 1)
+        angle = np.arccos(cos_angle)
+        
+        if angle > angle_threshold:
+            direction_bounces.append(curr_idx)
+            
+    # Velocity change
+    velocity_bounces = []
+    velocities = []
+    
+    for i in range(1, len(valid_points)):
+        prev_point = valid_points[i-1]
+        curr_point = valid_points[i]
+        
+        vx = curr_point[0] - prev_point[0]
+        vy = curr_point[1] - prev_point[1]
+        v_mag = np.sqrt(vx**2 + vy**2)
+        velocities.append(v_mag)
+    
+    # Velocity spikes/drops
+    if len(velocities) > 4:
+        velocity_threshold = np.std(velocities) * 1.5
+        
+        for i in range(2, len(velocities) - 2):
+            curr_v = velocities[i]
+            prev_v = velocities[i-1]
+            next_v = velocities[i+1]
+            
+            dv_before = abs(curr_v - prev_v)
+            dv_after = abs(next_v - curr_v)
+            
+            if dv_before > velocity_threshold or dv_after > velocity_threshold:
+                frame_idx = valid_indices[i+1]  
+                velocity_bounces.append(frame_idx)
+    
+    # Y-direction analysis
+    y_bounces = []
+    if len(valid_points) > 4:
+        y_coords = [pt[1] for pt in valid_points]
+        
+        for i in range(2, len(y_coords) - 2):
+            y_prev2 = y_coords[i-2]
+            y_prev = y_coords[i-1] 
+            y_curr = y_coords[i]
+            y_next = y_coords[i+1]
+            y_next2 = y_coords[i+2]
+            
+            if (y_curr < y_prev and y_curr < y_next and 
+                y_curr < y_prev2 and y_curr < y_next2):
+                
+                min_depth = min(abs(y_curr - y_prev), abs(y_curr - y_next))
+                if min_depth > 5:
+                    frame_idx = valid_indices[i]
+                    y_bounces.append(frame_idx)
+                    
+    all_bounces = set(direction_bounces + velocity_bounces + y_bounces)
+    bounce_frames = sorted(list(all_bounces))
+    
+    # Filter nearby bounces
+    filtered_bounces = []
+    for bounce in bounce_frames:
+        if not filtered_bounces or bounce - filtered_bounces[-1] > min_segment_length:
+            filtered_bounces.append(bounce)
+    
+    return filtered_bounces
+
+'''
+Bounce sensitivity constants (for reference, default medium):
+
+Level   ||  min_segment_length      angle_threshold
+===================================================
+low     ||  8                       np.pi/3
+medium  ||  5                       np.pi/4
+high    ||  3                       np.pi/6
+max     ||  2                       np.pi/8
+'''
+
+def create_straight_trajectory(mapped_ball_points, bounce_frames=None):
+    if bounce_frames is None:
+        bounce_frames = detect_bounces(mapped_ball_points)
+    
+    bounce_frames = [0] + sorted(bounce_frames) + [len(mapped_ball_points) - 1]
+    
+    straightened_points = [None] * len(mapped_ball_points)
+    
+    for i in range(len(bounce_frames) - 1):
+        start_frame = bounce_frames[i]
+        end_frame = bounce_frames[i + 1]
+        
+        start_point = None
+        end_point = None
+        
+        for f in range(start_frame, min(start_frame + 10, end_frame)):
+            if mapped_ball_points[f] is not None:
+                start_point = mapped_ball_points[f]
+                start_frame = f
+                break
+        
+        for f in range(end_frame, max(end_frame - 10, start_frame), -1):
+            if mapped_ball_points[f] is not None:
+                end_point = mapped_ball_points[f]
+                end_frame = f
+                break
+        
+        if start_point is not None and end_point is not None and start_frame < end_frame:
+            for f in range(start_frame, end_frame + 1):
+                alpha = (f - start_frame) / (end_frame - start_frame)
+                x = start_point[0] * (1 - alpha) + end_point[0] * alpha
+                y = start_point[1] * (1 - alpha) + end_point[1] * alpha
+                straightened_points[f] = (x, y)
+        else:
+            for f in range(start_frame, end_frame + 1):
+                if mapped_ball_points[f] is not None:
+                    straightened_points[f] = mapped_ball_points[f]
+    
+    return straightened_points

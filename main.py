@@ -69,10 +69,14 @@ def main():
 
     # Map ball and player locations to 2D with transform
     mapped_ball_points = map_ball_points(ball_track, homography, homographies)
+
+    # Correct for curvature
+    bounce_frames = detect_bounces(mapped_ball_points, 3, np.pi/6)
     mapped_player_detections = map_player_detections(player_detections, homography, homographies)
+    corrected_ball_points = create_straight_trajectory(mapped_ball_points, bounce_frames)
 
     # Draw ball on virtual court
-    virtual_court_frames = draw_virtual_court(homography.court_image, mapped_ball_points, mapped_player_detections)
+    virtual_court_frames = draw_virtual_court(homography.court_image, corrected_ball_points, mapped_player_detections)
 
     live_court_frames = build_live_court_view(frames, interpolated_points_per_frame, homography)
 
