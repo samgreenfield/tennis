@@ -44,6 +44,17 @@ class CourtModel(nn.Module):
         self.conv18 = ConvBlock(in_channels=64, out_channels=self.out_channels)
 
         self._init_weights()
+
+    def _init_weights(self):
+        for module in self.modules():
+            if isinstance(module, nn.Conv2d):
+                nn.init.uniform_(module.weight, -0.05, 0.05)
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0)
+
+            elif isinstance(module, nn.BatchNorm2d):
+                nn.init.constant_(module.weight, 1)
+                nn.init.constant_(module.bias, 0)   
                   
     def forward(self, x):
         x = self.conv1(x)
@@ -71,17 +82,6 @@ class CourtModel(nn.Module):
         x = self.conv17(x)
         x = self.conv18(x)
         return x
-    
-    def _init_weights(self):
-        for module in self.modules():
-            if isinstance(module, nn.Conv2d):
-                nn.init.uniform_(module.weight, -0.05, 0.05)
-                if module.bias is not None:
-                    nn.init.constant_(module.bias, 0)
-
-            elif isinstance(module, nn.BatchNorm2d):
-                nn.init.constant_(module.weight, 1)
-                nn.init.constant_(module.bias, 0)   
                 
 if __name__ == '__main__':
     device = 'cpu'

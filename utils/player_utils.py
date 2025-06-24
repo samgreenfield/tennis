@@ -9,6 +9,37 @@ class PlayerTracker():
     def __init__(self, model_path):
         self.model = YOLO(model_path)
 
+    def detect_frames(self, frames, stub_path = "stubs/player_stub.pkl"):
+        if os.path.isfile(stub_path):
+            with open(stub_path, 'rb') as stub:
+                return pickle.load(stub)
+            
+        player_detections = []
+        for frame in tqdm(frames):
+            player_dict = self.detect_frame(frame)
+            player_detections.append(player_dict)
+
+        with open(stub_path, 'wb') as stub:
+            pickle.dump(player_detections, stub)
+
+        return player_detections
+    
+    def detect_frame(self, frame):
+        results = self.model.track(frame, persist = True, verbose = False)[0]
+        class_names = results.names
+        player_dict = {}
+
+        for box in results.boxes:
+            track_id = int(box.id.tolist()[0])
+            result = box.xyxy.tolist()[0]
+            class_ids = box.cls.tolist()[0]
+            det_class_names = class_names[class_ids]
+
+            if det_class_names == "person":
+                player_dict[track_id] = result
+
+        return player_dict
+
     def choose_and_filter_players(self, court_keypoints, player_detections, homography_obj, homography):
         player_detections_first_frame = player_detections[0]
         chosen_players, _ = self.choose_players(court_keypoints, player_detections_first_frame, homography_obj, homography)
@@ -35,37 +66,6 @@ class PlayerTracker():
         distances.sort(key=lambda x: x[1], reverse=False)
         chosen_players = [player_id for player_id, min_distance, min_point in distances[:2]]
         return chosen_players, distances
-
-    def detect_frame(self, frame):
-        results = self.model.track(frame, persist = True, verbose = False)[0]
-        class_names = results.names
-        player_dict = {}
-
-        for box in results.boxes:
-            track_id = int(box.id.tolist()[0])
-            result = box.xyxy.tolist()[0]
-            class_ids = box.cls.tolist()[0]
-            det_class_names = class_names[class_ids]
-
-            if det_class_names == "person":
-                player_dict[track_id] = result
-
-        return player_dict
-    
-    def detect_frames(self, frames, stub_path = "stubs/player_stub.pkl"):
-        if os.path.isfile(stub_path):
-            with open(stub_path, 'rb') as stub:
-                return pickle.load(stub)
-            
-        player_detections = []
-        for frame in tqdm(frames):
-            player_dict = self.detect_frame(frame)
-            player_detections.append(player_dict)
-
-        with open(stub_path, 'wb') as stub:
-            pickle.dump(player_detections, stub)
-
-        return player_detections
     
     def draw_bboxes(self, video_frames, player_detections):
         output_frames = []
@@ -76,7 +76,7 @@ class PlayerTracker():
                 # frame = cv2.putText(frame, str(track_id), bbox_feet(bbox), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
             output_frames.append(frame)
         return output_frames
-    
+
 def map_player_detections(player_detections, homography_obj, homographies):
         mapped_player_detections = []
         for frame_idx, H in enumerate(homographies):
@@ -91,7 +91,7 @@ def map_player_detections(player_detections, homography_obj, homographies):
             else:
                 mapped_player_detections.append({})
         return mapped_player_detections
-    
+
 def tether_players_to_points(player_tracker, frame_points, player_detections, homography, homographies, frames, interpolated_points_per_frame):
     _, distances = player_tracker.choose_players(frame_points, player_detections[0], homography, homographies[0])
     for frame_num, frame in enumerate(frames):

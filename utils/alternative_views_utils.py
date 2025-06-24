@@ -15,6 +15,21 @@ def draw_virtual_court(court_img, mapped_ball_points, player_detections):
         court_frames.append(curr_frame)
     return court_frames
 
+def build_live_court_view(frames, interpolated_points_per_frame, homography_obj):
+    live_court_frames = []
+    for frame_idx, frame in enumerate(frames):
+        corner_points_video = interpolated_points_per_frame[frame_idx]
+
+        src_pts_video, dst_pts, output_width, output_height = compute_live_warp_points(corner_points_video, homography_obj)
+
+        warp_matrix = cv2.getPerspectiveTransform(src_pts_video, dst_pts)
+
+        # USE the correct output_width / output_height here!
+        warped_frame = cv2.warpPerspective(frame, warp_matrix, (output_width, output_height))
+
+        live_court_frames.append(warped_frame)
+    return live_court_frames
+
 def compute_live_warp_points(corner_points_video, homography_obj):
     court_w = homography_obj.court_width
     court_h = homography_obj.court_height
@@ -40,17 +55,3 @@ def compute_live_warp_points(corner_points_video, homography_obj):
 
     return src_pts_video, dst_pts, output_width, output_height
 
-def build_live_court_view(frames, interpolated_points_per_frame, homography_obj):
-    live_court_frames = []
-    for frame_idx, frame in enumerate(frames):
-        corner_points_video = interpolated_points_per_frame[frame_idx]
-
-        src_pts_video, dst_pts, output_width, output_height = compute_live_warp_points(corner_points_video, homography_obj)
-
-        warp_matrix = cv2.getPerspectiveTransform(src_pts_video, dst_pts)
-
-        # USE the correct output_width / output_height here!
-        warped_frame = cv2.warpPerspective(frame, warp_matrix, (output_width, output_height))
-
-        live_court_frames.append(warped_frame)
-    return live_court_frames

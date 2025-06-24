@@ -14,15 +14,6 @@ def read_video(path_video):
     cap.release()
     return frames, fps
 
-def save_video(output_path, fps, frames):
-    height, width = frames[0].shape[:2]
-    out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), 
-                          fps, (width, height))
-    for frame in frames:
-        out.write(frame)
-    out.release()
-
-
 def combine_frames(live_court_frames, frames, virtual_frames):
     combined_frames = []
 
@@ -50,3 +41,11 @@ def combine_frames(live_court_frames, frames, virtual_frames):
         combined_frames.append(combined)
 
     return combined_frames
+
+def save_video(output_path, fps, frames):
+    height, width = frames[0].shape[:2]
+    out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), 
+                          fps, (width, height))
+    for frame in frames:
+        out.write(frame)
+    out.release()

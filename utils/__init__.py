@@ -5,6 +5,5 @@ from .ball_utils import *
 from .alternative_views_utils import *
 from .homography_utils import *
 from .player_utils import *
-
 from .ball_model import *
 from .court_model import *

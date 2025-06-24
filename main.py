@@ -49,6 +49,8 @@ def main():
     # Compute ball location
     ball_track, dists = infer_ball(frames, ball_model, device)
     ball_track = remove_outliers(ball_track, dists)
+    ball_track = apply_smoothing(ball_track)
+    ball_track = interpolate_missing_points(ball_track)
 
     OUTPUT_WIDTH = 640
     OUTPUT_HEIGHT = 360
@@ -82,7 +84,7 @@ def main():
 
     # Draw ball and court
     frames = draw_ball(frames, ball_track, trace = 1)
-    frames = draw_court(frames, interpolated_points_per_frame)
+    # frames = draw_court(frames, interpolated_points_per_frame)
     frames = player_tracker.draw_bboxes(frames, player_detections)
 
     # # Draw a line connecting tracked players to the points they are tracked from

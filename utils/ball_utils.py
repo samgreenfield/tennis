@@ -1,21 +1,7 @@
 import os, cv2, pickle, torch, numpy as np
 from copy import copy
 from tqdm import tqdm
-from utils import distance
-
-def postprocess_ball(feature_map, scale=2):
-    feature_map *= 255
-    feature_map = feature_map.reshape((360, 640))
-    feature_map = feature_map.astype(np.uint8)
-    ret, heatmap = cv2.threshold(feature_map, 127, 255, cv2.THRESH_BINARY)
-    circles = cv2.HoughCircles(heatmap, cv2.HOUGH_GRADIENT, dp=1, minDist=1, param1=50, param2=2, minRadius=2,
-                               maxRadius=7)
-    x,y = None, None
-    if circles is not None:
-        if len(circles) == 1:
-            x = circles[0][0][0]*scale
-            y = circles[0][0][1]*scale
-    return x, y
+from utils import euclidean_distance as distance
 
 def infer_ball(frames, model, device, stub_path = 'stubs/ball_stub.pkl'):
     if os.path.isfile(stub_path):
@@ -42,7 +28,7 @@ def infer_ball(frames, model, device, stub_path = 'stubs/ball_stub.pkl'):
         ball_track.append((x_pred, y_pred))
 
         if ball_track[-1][0] and ball_track[-2][0]:
-            dist = distance.euclidean(ball_track[-1], ball_track[-2])
+            dist = distance(ball_track[-1], ball_track[-2])
         else:
             dist = -1
         dists.append(dist)
@@ -51,6 +37,20 @@ def infer_ball(frames, model, device, stub_path = 'stubs/ball_stub.pkl'):
         pickle.dump((ball_track, dists), stub)
 
     return ball_track, dists 
+
+def postprocess_ball(feature_map, scale=2):
+    feature_map *= 255
+    feature_map = feature_map.reshape((360, 640))
+    feature_map = feature_map.astype(np.uint8)
+    ret, heatmap = cv2.threshold(feature_map, 127, 255, cv2.THRESH_BINARY)
+    circles = cv2.HoughCircles(heatmap, cv2.HOUGH_GRADIENT, dp=1, minDist=1, param1=50, param2=2, minRadius=2,
+                               maxRadius=7)
+    x,y = None, None
+    if circles is not None:
+        if len(circles) == 1:
+            x = circles[0][0][0]*scale
+            y = circles[0][0][1]*scale
+    return x, y
 
 def remove_outliers(ball_track, dists, max_velocity=150, max_acceleration=50, smoothing_window=5, confidence_threshold=0.7):
     if len(ball_track) < 3: return ball_track
@@ -137,31 +137,6 @@ def apply_smoothing(ball_track, window_size=5):
     
     return smoothed_track
 
-def interpolate_ball_track(ball_track):
-    interpolated_track = ball_track.copy()
-    xs = [pt[0] if pt[0] is not None else np.nan for pt in ball_track]
-    ys = [pt[1] if pt[1] is not None else np.nan for pt in ball_track]
-
-    xs_interp = np.copy(xs)
-    ys_interp = np.copy(ys)
-
-    n_frames = len(xs)
-    valid_idx = np.array([i for i in range(n_frames) if not np.isnan(xs[i])])
-    
-    if len(valid_idx) < 2:
-        return interpolated_track
-
-    xs_valid = np.array([xs[i] for i in valid_idx])
-    ys_valid = np.array([ys[i] for i in valid_idx])
-
-    xs_interp = np.interp(np.arange(n_frames), valid_idx, xs_valid)
-    ys_interp = np.interp(np.arange(n_frames), valid_idx, ys_valid)
-
-    for i in range(n_frames):
-        interpolated_track[i] = (xs_interp[i], ys_interp[i])
-
-    return interpolated_track
-
 def interpolate_missing_points(ball_track, max_gap=10):
     interpolated_track = ball_track.copy()
     
@@ -200,23 +175,6 @@ def interpolate_missing_points(ball_track, max_gap=10):
     
     return interpolated_track
 
-def draw_ball(frames, ball_track, trace):
-    output_frames = []
-    
-    for num in range(len(frames)):
-        frame = frames[num]
-        for i in range(trace):
-            if (num-i > 0):
-                if ball_track[num-i][0]:
-                    x = int(ball_track[num-i][0])
-                    y = int(ball_track[num-i][1])
-                    frame = cv2.circle(frame, (x,y), radius=0, color=(127, 0, 255), thickness=10-i)
-                else:
-                    break
-        output_frames.append(frame)
-    
-    return output_frames
-
 def map_ball_points(ball_track, homography_obj, homographies):
     mapped_ball_points = []
     for frame_idx, H in enumerate(homographies):
@@ -227,43 +185,6 @@ def map_ball_points(ball_track, homography_obj, homographies):
         else:
             mapped_ball_points.append(None)
     return mapped_ball_points
-
-def detect_trajectory_changes(mapped_ball_points, velocity_threshold=15.0):
-    vx_list = []
-    vy_list = []
-    v_norm_list = []
-    
-    for i in range(1, len(mapped_ball_points)):
-        pt_prev = mapped_ball_points[i-1]
-        pt_curr = mapped_ball_points[i]
-        
-        if pt_prev is None or pt_curr is None:
-            vx_list.append(0)
-            vy_list.append(0)
-            v_norm_list.append(0)
-            continue
-        
-        vx = pt_curr[0] - pt_prev[0]
-        vy = pt_curr[1] - pt_prev[1]
-        v_norm = np.sqrt(vx**2 + vy**2)
-        
-        vx_list.append(vx)
-        vy_list.append(vy)
-        v_norm_list.append(v_norm)
-    
-    change_frames = []
-    
-    for i in range(2, len(v_norm_list)-2):
-        if v_norm_list[i] == 0:
-            continue
-            
-        dv_before = abs(v_norm_list[i] - v_norm_list[i-1])
-        dv_after = abs(v_norm_list[i+1] - v_norm_list[i])
-        
-        if dv_before > velocity_threshold or dv_after > velocity_threshold:
-            change_frames.append(i+1)
-    
-    return set(change_frames)
 
 def detect_bounces(mapped_ball_points, min_segment_length=5, angle_threshold=np.pi/4):
     bounce_frames = []
@@ -363,17 +284,6 @@ def detect_bounces(mapped_ball_points, min_segment_length=5, angle_threshold=np.
     
     return filtered_bounces
 
-'''
-Bounce sensitivity constants (for reference, default medium):
-
-Level   ||  min_segment_length      angle_threshold
-===================================================
-low     ||  8                       np.pi/3
-medium  ||  5                       np.pi/4
-high    ||  3                       np.pi/6
-max     ||  2                       np.pi/8
-'''
-
 def create_straight_trajectory(mapped_ball_points, bounce_frames=None):
     if bounce_frames is None:
         bounce_frames = detect_bounces(mapped_ball_points)
@@ -413,3 +323,31 @@ def create_straight_trajectory(mapped_ball_points, bounce_frames=None):
                     straightened_points[f] = mapped_ball_points[f]
     
     return straightened_points
+
+def draw_ball(frames, ball_track, trace):
+    output_frames = []
+    
+    for num in range(len(frames)):
+        frame = frames[num]
+        for i in range(trace):
+            if (num-i > 0):
+                if ball_track[num-i][0]:
+                    x = int(ball_track[num-i][0])
+                    y = int(ball_track[num-i][1])
+                    frame = cv2.circle(frame, (x,y), radius=0, color=(127, 0, 255), thickness=10-i)
+                else:
+                    break
+        output_frames.append(frame)
+    
+    return output_frames
+
+'''
+Bounce sensitivity constants (for reference, default medium):
+
+Level   ||  min_segment_length      angle_threshold
+===================================================
+low     ||  8                       np.pi/3
+medium  ||  5                       np.pi/4
+high    ||  3                       np.pi/6
+max     ||  2                       np.pi/8
+'''
