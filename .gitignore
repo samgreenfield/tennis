@@ -6,3 +6,9 @@ stubs/player_stub.pkl
 utils/__pycache__/__init__.cpython-311.pyc
 utils/__pycache__/ball_utils.cpython-311.pyc
 utils/__pycache__/court_utils.cpython-311.pyc
+models/court_model.mlpackage/Data/com.apple.CoreML/model.mlmodel
+.gitignore
+models/court_model.mlpackage/Manifest.json
+media/processed.mp4
+models/yolo12n.pt
+models/court_model.mlpackage/Data/com.apple.CoreML/weights/weight.bin
