@@ -4,32 +4,36 @@ import os
 
 class Homography():
     def __init__(self):
-        self.court_width = 319
-        self.court_height = 670
-        self.offset_x = 87
-        self.offset_y = 35
+        self.court_width = 239
+        self.court_height = 504
+        self.offset_x = 130
+        self.offset_y = 123
 
         self.court_image_path = 'media/tennis_court.png'
         if os.path.isfile('media/tennis_court.png'):
             self.court_image = cv2.imread('media/tennis_court.png')
         else: print("No image found")
         
-        self.court_pts = np.array([
-            [self.offset_x, self.offset_y],
-            [self.offset_x + self.court_width, self.offset_y],
-            [self.offset_x + self.court_width, self.offset_y + self.court_height],  
-            [self.offset_x, self.offset_y + self.court_height]
-        ], dtype=np.float32)
+        self.ref_court_pts = np.array([
+        [130, 123],
+        [369, 123],
+        [130, 627],
+        [369, 627],
+        [155.5, 123],
+        [155.5, 627],
+        [344, 123],
+        [344, 627],
+        [155.5, 247.5],
+        [344, 247.5],
+        [155.5, 502.5],
+        [344, 502.5],
+        [250, 247.5],
+        [250, 502.5]], dtype=np.float32)
 
-    def compute_homography(self, corner_points):
-        ordered_corners = np.array([
-            corner_points[0],  # top-left
-            corner_points[1],  # top-right
-            corner_points[3],  # bottom-right
-            corner_points[2],  # bottom-left
-        ], dtype=np.float32)
+    def compute_homography(self, inferred_points):
+        inferred_points = np.array(inferred_points, dtype=np.float32)
 
-        H, status = cv2.findHomography(ordered_corners, self.court_pts)
+        H, status = cv2.findHomography(inferred_points, self.ref_court_pts)
         return H
     
     def map_point(self, point, H):

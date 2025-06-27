@@ -24,17 +24,17 @@ def combine_frames(live_court_frames, frames, virtual_frames):
 
         h_target = max(frame_disp.shape[0], court_disp.shape[0], live_warp_disp.shape[0])
 
-        def pad_to_height(img, target_h):
-            h_img = img.shape[0]
-            if h_img < target_h:
-                top_pad = (target_h - h_img) // 2
-                bottom_pad = target_h - h_img - top_pad
-                img = cv2.copyMakeBorder(img, top_pad, bottom_pad, 0, 0, cv2.BORDER_CONSTANT, value=(0,0,0))
+        def resize_to_height(img, target_h):
+            h_img, w_img = img.shape[:2]
+            if h_img != target_h:
+                scale = target_h / h_img
+                new_w = int(w_img * scale)
+                img = cv2.resize(img, (new_w, target_h), interpolation=cv2.INTER_LINEAR)
             return img
 
-        frame_disp = pad_to_height(frame_disp, h_target)
-        court_disp = pad_to_height(court_disp, h_target)
-        live_warp_disp = pad_to_height(live_warp_disp, h_target)
+        frame_disp = resize_to_height(frame_disp, h_target)
+        court_disp = resize_to_height(court_disp, h_target)
+        live_warp_disp = resize_to_height(live_warp_disp, h_target)
 
         # Combine horizontally: left to right
         combined = np.hstack((live_warp_disp, frame_disp, court_disp))

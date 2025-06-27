@@ -11,9 +11,10 @@ def infer_ball(frames, model, device, stub_path = 'stubs/ball_stub.pkl'):
 
     height = 360
     width = 640
+    scale = frames[0].shape[1] / width
     dists = [-1]*2
     ball_track = [(None,None)]*2
-    for num in tqdm(range(2, len(frames))):
+    for num in tqdm(range(2, len(frames)), desc="Inferring ball position", unit="frame"):
         img = cv2.resize(frames[num], (width, height))
         img_prev = cv2.resize(frames[num-1], (width, height))
         img_preprev = cv2.resize(frames[num-2], (width, height))
@@ -24,7 +25,8 @@ def infer_ball(frames, model, device, stub_path = 'stubs/ball_stub.pkl'):
 
         out = model(torch.from_numpy(inp).float().to(device))
         output = out.argmax(dim=1).detach().cpu().numpy()
-        x_pred, y_pred = postprocess_ball(output)
+        x_pred, y_pred = postprocess_ball(output, scale = scale)
+        
         ball_track.append((x_pred, y_pred))
 
         if ball_track[-1][0] and ball_track[-2][0]:
@@ -178,7 +180,7 @@ def interpolate_missing_points(ball_track, max_gap=10):
 def map_ball_points(ball_track, homography_obj, homographies):
     mapped_ball_points = []
     for frame_idx, H in enumerate(homographies):
-        if ball_track[frame_idx][0]:
+        if ball_track[frame_idx]:
             ball_pt = (ball_track[frame_idx][0], ball_track[frame_idx][1])
             ball_mapped = homography_obj.map_point(ball_pt, H)
             mapped_ball_points.append(ball_mapped)
@@ -324,7 +326,7 @@ def create_straight_trajectory(mapped_ball_points, bounce_frames=None):
     
     return straightened_points
 
-def draw_ball(frames, ball_track, trace):
+def draw_ball(frames, ball_track, trace, scale):
     output_frames = []
     
     for num in range(len(frames)):
@@ -334,7 +336,7 @@ def draw_ball(frames, ball_track, trace):
                 if ball_track[num-i][0]:
                     x = int(ball_track[num-i][0])
                     y = int(ball_track[num-i][1])
-                    frame = cv2.circle(frame, (x,y), radius=0, color=(127, 0, 255), thickness=10-i)
+                    frame = cv2.circle(frame, (x,y), radius=0, color=(127, 0, 255), thickness=int(7 * scale))
                 else:
                     break
         output_frames.append(frame)

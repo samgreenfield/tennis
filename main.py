@@ -20,7 +20,7 @@ def main():
     if not args.court_model_path:
         args.court_model_path = 'models/court_model.pt'
     if not args.player_tracking_model_path:
-        args.player_tracking_model_path = "models/yolo12l.pt"
+        args.player_tracking_model_path = "models/yolo12n.pt"
     if not args.output_path:
         args.output_path = os.path.join(os.path.dirname(args.input_path), "processed.mp4")
 
@@ -45,6 +45,7 @@ def main():
 
     # Load the video
     frames, fps = read_video(args.input_path)
+    scale = frames[0].shape[1] / 640.0
 
     # Compute ball location
     ball_track, dists = infer_ball(frames, ball_model, device)
@@ -54,14 +55,14 @@ def main():
 
     OUTPUT_WIDTH = 640
     OUTPUT_HEIGHT = 360
+    homography = Homography()
 
     # Compute court points
     frame_points = infer_court(frames, OUTPUT_WIDTH, OUTPUT_HEIGHT, court_model, device)
-    filled_frame_points = fill_missing_points_per_frame(frame_points)
+    filled_frame_points = fill_missing_points_per_frame(frame_points, homography)
     interpolated_points_per_frame = interpolate_court_points_per_frame(frames, filled_frame_points)
 
     # Compute transform to 2D
-    homography = Homography()
     homographies = frame_homographies(frames, interpolated_points_per_frame, homography)
 
     # Track players
@@ -78,14 +79,13 @@ def main():
     corrected_ball_points = create_straight_trajectory(mapped_ball_points, bounce_frames)
 
     # Draw ball on virtual court
-    virtual_court_frames = draw_virtual_court(homography.court_image, corrected_ball_points, mapped_player_detections)
-
+    virtual_court_frames = draw_virtual_court(homography.court_image, mapped_ball_points, mapped_player_detections)
     live_court_frames = build_live_court_view(frames, interpolated_points_per_frame, homography)
 
     # Draw ball and court
-    frames = draw_ball(frames, ball_track, trace = 1)
-    # frames = draw_court(frames, interpolated_points_per_frame)
-    frames = player_tracker.draw_bboxes(frames, player_detections)
+    frames = draw_ball(frames, ball_track, 1, scale)
+    frames = draw_court(frames, interpolated_points_per_frame, scale)
+    frames = player_tracker.draw_bboxes(frames, player_detections, scale)
 
     # # Draw a line connecting tracked players to the points they are tracked from
     # tether_players_to_points(player_tracker, frame_points, player_detections, homography, homographies, frames, interpolated_points_per_frame)
@@ -95,6 +95,7 @@ def main():
     # Draw ball location on frame and save to output path
     save_video(args.output_path, fps, combined_video)
 
+    subprocess.call(['open', "-R", args.output_path])
     subprocess.call(['open', args.output_path])
 
 if __name__ == '__main__':

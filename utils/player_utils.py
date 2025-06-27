@@ -15,7 +15,7 @@ class PlayerTracker():
                 return pickle.load(stub)
             
         player_detections = []
-        for frame in tqdm(frames):
+        for frame in tqdm(frames, desc="Detecting players", unit="frame"):
             player_dict = self.detect_frame(frame)
             player_detections.append(player_dict)
 
@@ -30,13 +30,14 @@ class PlayerTracker():
         player_dict = {}
 
         for box in results.boxes:
-            track_id = int(box.id.tolist()[0])
-            result = box.xyxy.tolist()[0]
-            class_ids = box.cls.tolist()[0]
-            det_class_names = class_names[class_ids]
+            if box.id is not None:
+                track_id = int(box.id.tolist()[0])
+                result = box.xyxy.tolist()[0]
+                class_ids = box.cls.tolist()[0]
+                det_class_names = class_names[class_ids]
 
-            if det_class_names == "person":
-                player_dict[track_id] = result
+                if det_class_names == "person":
+                    player_dict[track_id] = result
 
         return player_dict
 
@@ -67,12 +68,12 @@ class PlayerTracker():
         chosen_players = [player_id for player_id, min_distance, min_point in distances[:2]]
         return chosen_players, distances
     
-    def draw_bboxes(self, video_frames, player_detections):
+    def draw_bboxes(self, video_frames, player_detections, scale):
         output_frames = []
         for frame, player_dict in zip(video_frames, player_detections):
             for track_id, bbox in player_dict.items():
                 x1, y1, x2, y2 = bbox
-                frame = cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (73, 247, 245), 3)
+                frame = cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (73, 247, 245), int(3 * scale))
                 # frame = cv2.putText(frame, str(track_id), bbox_feet(bbox), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
             output_frames.append(frame)
         return output_frames

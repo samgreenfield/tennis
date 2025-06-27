@@ -19,12 +19,9 @@ def build_live_court_view(frames, interpolated_points_per_frame, homography_obj)
     live_court_frames = []
     for frame_idx, frame in enumerate(frames):
         corner_points_video = interpolated_points_per_frame[frame_idx]
-
         src_pts_video, dst_pts, output_width, output_height = compute_live_warp_points(corner_points_video, homography_obj)
 
-        warp_matrix = cv2.getPerspectiveTransform(src_pts_video, dst_pts)
-
-        # USE the correct output_width / output_height here!
+        warp_matrix = cv2.getPerspectiveTransform(np.array(src_pts_video), dst_pts)
         warped_frame = cv2.warpPerspective(frame, warp_matrix, (output_width, output_height))
 
         live_court_frames.append(warped_frame)
@@ -46,12 +43,7 @@ def compute_live_warp_points(corner_points_video, homography_obj):
         [offset_x + court_w, offset_y + court_h]           # bottom-right
     ], dtype=np.float32)
 
-    src_pts_video = np.array([
-        corner_points_video[0],   # top-left in video
-        corner_points_video[1],   # top-right in video
-        corner_points_video[2],   # bottom-left in video
-        corner_points_video[3]    # bottom-right in video
-    ], dtype=np.float32)
+    src_pts_video = np.array([corner_points_video[i][:2] for i in [0, 1, 2, 3]], dtype=np.float32)
 
-    return src_pts_video, dst_pts, output_width, output_height
+    return [src_pt[:2] for src_pt in src_pts_video], dst_pts, output_width, output_height
 

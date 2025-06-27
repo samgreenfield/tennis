@@ -9,8 +9,9 @@ def infer_court(frames, width, height, model, device, step = 5, stub_path = 'stu
     
     inferred_points = {}
     
-    for idx in tqdm(range(0, len(frames), step)):
+    for idx in tqdm(range(0, len(frames), step), desc="Inferring court points", unit="frame"):
         image = frames[idx]
+        scale = image.shape[1] / width
         img = cv2.resize(image, (width, height))
         inp = (img.astype(np.float32) / 255.)
         inp = torch.tensor(np.rollaxis(inp, 2, 0))
@@ -22,9 +23,19 @@ def infer_court(frames, width, height, model, device, step = 5, stub_path = 'stu
         points = []
         for kps_num in range(14):
             heatmap = (pred[kps_num] * 255).astype(np.uint8)
-            x_pred, y_pred = postprocess_court(heatmap, low_thresh=170, max_radius=25)
-            
-            points.append((x_pred, y_pred))
+            x_pred, y_pred = postprocess_court(heatmap, low_thresh=170, max_radius=25, scale=scale)
+            if x_pred is not None and y_pred is not None:
+                max_val = float(np.max(pred[kps_num]))
+                mean_val = float(np.mean(pred[kps_num]))
+                peakiness = max_val - mean_val
+                xh = int(x_pred / scale)
+                yh = int(y_pred / scale)
+                window = pred[kps_num][max(0, yh-7):yh+8, max(0, xh-7):xh+8]
+                local_mean = float(np.mean(window)) if window.size > 0 else 0.0
+                confidence = 0.5 * peakiness + 0.5 * local_mean
+            else:
+                confidence = 0.0
+            points.append((x_pred, y_pred, confidence))
 
         inferred_points[idx] = points
 
@@ -43,43 +54,33 @@ def postprocess_court(heatmap, scale=2, low_thresh=155, min_radius=10, max_radiu
         y_pred = circles[0][0][1] * scale
     return x_pred, y_pred
 
-def fill_missing_points_per_frame(frame_points):
+def fill_missing_points_per_frame(frame_points, homography):
     filled_points_per_frame = {}
     for frame_idx, pts in frame_points.items():
-        filled_pts = fill_missing_points(pts)
+        filled_pts = fill_missing_points(pts, homography=homography)
         filled_points_per_frame[frame_idx] = filled_pts
     return filled_points_per_frame
 
-def fill_missing_points(frame_pts):
-    ref_court_pts = np.array([
-        [87, 35],
-        [406, 35],
-        [87, 705],
-        [406, 705],
-        [121, 35],
-        [121, 705],
-        [372, 35],
-        [372, 705],
-        [121, 201],
-        [372, 201],
-        [121, 539],
-        [372, 539],
-        [247, 202],
-        [247, 539]], dtype=np.float32)
-
+def fill_missing_points(frame_pts, confidence_thresh=0.52, homography=None):
+    ref_court_pts = homography.ref_court_pts
     src_pts = []
     dst_pts = []
+    # confidence_tot = 0
+
     for i, pt in enumerate(frame_pts):
-        if not None in pt:
+        if pt is not None and len(pt) == 3 and pt[2] >= confidence_thresh:
             src_pt = ref_court_pts[i]
             src_pts.append((src_pt[0], src_pt[1]))
-            dst_pts.append(pt)
+            dst_pts.append(pt[:2])
+            # confidence_tot += pt[2]
+
+    # print(confidence_tot/len(frame_pts))
 
     src_pts = np.array(src_pts)
     dst_pts = np.array(dst_pts)
 
     if len(src_pts) < 4:
-        print("Not enough points to infer homography")
+        # print("Not enough points to infer homography")
         return frame_pts
         
     H, _ = cv2.findHomography(src_pts, dst_pts)
@@ -119,31 +120,47 @@ def interpolate_court_points_per_frame(frames, inferred_points):
 
 def frame_homographies(frames, corner_points, homography_obj):
     homographies = []
-    for frame_idx, frame in enumerate(frames):
-        input_points = np.array(corner_points[frame_idx][:4], dtype=np.float32)
+    for frame_idx in range(len(frames)):
+        input_points = np.array([corner_point[:2] for corner_point in corner_points[frame_idx]], dtype=np.float32)
         H = homography_obj.compute_homography(input_points)
         homographies.append(H)
     return homographies
 
-def draw_court(frames, interpolated_points_per_frame):
+def draw_court(frames, interpolated_points_per_frame, scale):
     frames_upd = []
 
     for idx, image in enumerate(frames):
         interp_points = interpolated_points_per_frame[idx]
 
-        corner_points = []
+        # Draw translucent blue quadrilateral with correct point order: 0,1,3,2 (clockwise)
+        quad_indices = [0, 1, 3, 2]
+        quad_pts = [interp_points[i] for i in quad_indices]
+        if all(p is not None and not None in p for p in quad_pts):
+            pts = np.array([[int(p[0]), int(p[1])] for p in quad_pts], dtype=np.int32)
+            overlay = image.copy()
+            cv2.fillPoly(overlay, [pts], color=(255, 0, 0))  # Blue in BGR
+            alpha = 0.25
+            image = cv2.addWeighted(overlay, alpha, image, 1 - alpha, 0)
 
         for pt_idx, p in enumerate(interp_points):
             if not None in p:
-                if len(corner_points) < 4:
-                    corner_points.append(p)
-                image = cv2.circle(image, (int(p[0]), int(p[1])),
-                                  radius=0, color=(0, 0, 255), thickness=10)
-                image = cv2.putText(image, str(pt_idx), (int(p[0]), int(p[1])), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+                x = int(p[0])
+                y = int(p[1])
 
-        for idx, p1 in enumerate(corner_points[:-1]):
-            for p2 in corner_points[idx + 1:]:
-                image = cv2.line(image, (int(p1[0]), int(p1[1])), (int(p2[0]), int(p2[1])), (222, 74, 69), 5)
+                # if len(corner_points) < 4:
+                #     corner_points.append((x, y))
+
+                image = cv2.circle(image, (x, y), radius=0, color=(0, 0, 255), thickness=int(4 * scale))
+                image = cv2.putText(image, str(pt_idx), (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.25 * scale, (255, 0, 0), int(1.5 * scale))
+
+        # for i, p1 in enumerate(corner_points[:-1]):
+        #     for p2 in corner_points[i + 1:]:
+        # for (p1, p2) in [(0, 1), (0, 2), (1, 3), (2, 3), (4, 5), (6, 7), (8, 9), (10, 11), (12, 13)]:
+        #     p1 = (int(interp_points[p1][0]), int(interp_points[p1][1]))
+        #     p2 = (int(interp_points[p2][0]), int(interp_points[p2][1]))        
+        #     image = cv2.line(image, p1, p2, (222, 74, 69), int(3 * scale))
+
+        
 
         frames_upd.append(image)
 
