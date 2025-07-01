@@ -14,29 +14,28 @@ def read_video(path_video):
     cap.release()
     return frames, fps
 
+def resize_to_height(img, target_h):
+    h_img, w_img = img.shape[:2]
+    if h_img != target_h:
+        scale = target_h / h_img
+        new_w = int(w_img * scale)
+        img = cv2.resize(img, (new_w, target_h), interpolation=cv2.INTER_LINEAR)
+    return img
+
 def combine_frames(live_court_frames, frames, virtual_frames):
     combined_frames = []
-
-    for frame_idx in range(len(frames)):
-        frame_disp = frames[frame_idx].copy()
+    n = len(frames)
+    h_target = max(frames[0].shape[0], virtual_frames[0].shape[0], live_court_frames[0].shape[0])
+    
+    for frame_idx in range(n):
+        frame_disp = frames[frame_idx]
         court_disp = virtual_frames[frame_idx]
         live_warp_disp = live_court_frames[frame_idx]
-
-        h_target = max(frame_disp.shape[0], court_disp.shape[0], live_warp_disp.shape[0])
-
-        def resize_to_height(img, target_h):
-            h_img, w_img = img.shape[:2]
-            if h_img != target_h:
-                scale = target_h / h_img
-                new_w = int(w_img * scale)
-                img = cv2.resize(img, (new_w, target_h), interpolation=cv2.INTER_LINEAR)
-            return img
 
         frame_disp = resize_to_height(frame_disp, h_target)
         court_disp = resize_to_height(court_disp, h_target)
         live_warp_disp = resize_to_height(live_warp_disp, h_target)
 
-        # Combine horizontally: left to right
         combined = np.hstack((live_warp_disp, frame_disp, court_disp))
         combined_frames.append(combined)
 

@@ -12,3 +12,6 @@ models/court_model.mlpackage/Manifest.json
 media/processed.mp4
 models/yolo12n.pt
 models/court_model.mlpackage/Data/com.apple.CoreML/weights/weight.bin
+models/yolo12m.pt
+.gitignore
+models/yolo12s.pt

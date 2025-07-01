@@ -1,12 +1,22 @@
 import cv2, torch, pickle, os, numpy as np, torch.nn.functional as F
 from tqdm import tqdm
-from utils import interpolate_points
+from utils.court_model import CourtModel
+from utils.geometry_utils import interpolate_points
 
-def infer_court(frames, width, height, model, device, step = 5, stub_path = 'stubs/court_stub.pkl'):
+def infer_court(frames, width, height, court_model_path, device, step = 5, stub_path = 'stubs/court_stub.pkl'):
     if os.path.isfile(stub_path):
         with open(stub_path, 'rb') as stub:
             return pickle.load(stub)
     
+    print("Inferring court points...")
+
+    # Set up court-tracking model (NOTE: Put inside of inference function?)
+    court_model = CourtModel(out_channels=15)
+    court_model = court_model.to(device)
+    court_model.load_state_dict(torch.load(court_model_path, map_location=device))
+    court_model.eval()
+
+
     inferred_points = {}
     
     for idx in tqdm(range(0, len(frames), step), desc="Inferring court points", unit="frame"):
@@ -17,7 +27,7 @@ def infer_court(frames, width, height, model, device, step = 5, stub_path = 'stu
         inp = torch.tensor(np.rollaxis(inp, 2, 0))
         inp = inp.unsqueeze(0)
 
-        out = model(inp.float().to(device))[0]
+        out = court_model(inp.float().to(device))[0]
         pred = F.sigmoid(out).detach().cpu().numpy()
 
         points = []
@@ -150,7 +160,7 @@ def draw_court(frames, interpolated_points_per_frame, scale):
                 # if len(corner_points) < 4:
                 #     corner_points.append((x, y))
 
-                image = cv2.circle(image, (x, y), radius=0, color=(0, 0, 255), thickness=int(4 * scale))
+                # image = cv2.circle(image, (x, y), radius=0, color=(0, 0, 255), thickness=int(4 * scale))
                 image = cv2.putText(image, str(pt_idx), (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.25 * scale, (255, 0, 0), int(1.5 * scale))
 
         # for i, p1 in enumerate(corner_points[:-1]):

@@ -13,6 +13,7 @@ class PlayerTracker():
         if os.path.isfile(stub_path):
             with open(stub_path, 'rb') as stub:
                 return pickle.load(stub)
+        print("Detecting players in frames...")
             
         player_detections = []
         for frame in tqdm(frames, desc="Detecting players", unit="frame"):

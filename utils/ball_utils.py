@@ -1,13 +1,23 @@
 import os, cv2, pickle, torch, numpy as np
 from copy import copy
 from tqdm import tqdm
-from utils import euclidean_distance as distance
+from utils.ball_model import BallModel
+from utils.geometry_utils import euclidean_distance as distance
+from utils.homography_utils import Homography
 
-def infer_ball(frames, model, device, stub_path = 'stubs/ball_stub.pkl'):
+def infer_ball(frames, device, ball_model_path, stub_path = 'stubs/ball_stub.pkl'):
     if os.path.isfile(stub_path):
         with open(stub_path, 'rb') as stub:
             loaded_stub = pickle.load(stub)
             return loaded_stub[0], loaded_stub[1]
+
+    print("Inferring ball position...")
+
+    # Set up ball-tracking model
+    ball_model = BallModel()
+    ball_model.load_state_dict(torch.load(ball_model_path, map_location=device))
+    ball_model = ball_model.to(device)
+    ball_model.eval()
 
     height = 360
     width = 640
@@ -23,7 +33,7 @@ def infer_ball(frames, model, device, stub_path = 'stubs/ball_stub.pkl'):
         imgs = np.rollaxis(imgs, 2, 0)
         inp = np.expand_dims(imgs, axis=0)
 
-        out = model(torch.from_numpy(inp).float().to(device))
+        out = ball_model(torch.from_numpy(inp).float().to(device))
         output = out.argmax(dim=1).detach().cpu().numpy()
         x_pred, y_pred = postprocess_ball(output, scale = scale)
         
@@ -131,10 +141,10 @@ def apply_smoothing(ball_track, window_size=5):
             if ball_track[j][0] is not None:
                 window_points.append(ball_track[j])
         
+        # maybe median
         if len(window_points) >= 3:
-            # NOTE: Maybe mean???
-            smoothed_x = np.median([pt[0] for pt in window_points])
-            smoothed_y = np.median([pt[1] for pt in window_points])
+            smoothed_x = np.mean([pt[0] for pt in window_points])
+            smoothed_y = np.mean([pt[1] for pt in window_points])
             smoothed_track[i] = (smoothed_x, smoothed_y)
     
     return smoothed_track
@@ -280,8 +290,9 @@ def detect_bounces(mapped_ball_points, min_segment_length=5, angle_threshold=np.
     
     # Filter nearby bounces
     filtered_bounces = []
+    bounce_frames.reverse()
     for bounce in bounce_frames:
-        if not filtered_bounces or bounce - filtered_bounces[-1] > min_segment_length:
+        if not filtered_bounces or filtered_bounces[-1] - bounce > min_segment_length:
             filtered_bounces.append(bounce)
     
     return filtered_bounces
@@ -342,6 +353,109 @@ def draw_ball(frames, ball_track, trace, scale):
         output_frames.append(frame)
     
     return output_frames
+
+def adjust_ball_height(
+    mapped_ball_points, mapped_player_detections, ref_court_points, 
+    fade_dist=20, cap_offset=10, player_x_thresh=80
+):
+    adjusted_track = []
+    for frame_idx, ball in enumerate(mapped_ball_points):
+        if ball is None or ball[0] is None or ball[1] is None:
+            adjusted_track.append(ball)
+            continue
+
+        x0, y0 = ref_court_points[0]
+        x1, y1 = ref_court_points[1]
+        bx, by = ball
+
+        baseline_dx = x1 - x0
+        baseline_dy = y1 - y0
+        denominator = np.sqrt(baseline_dx**2 + baseline_dy**2)
+        if denominator == 0:
+            adjusted_track.append(ball)
+            continue
+        numerator = baseline_dx * (by - y0) - baseline_dy * (bx - x0)
+        signed_dist = numerator / denominator  
+
+        if signed_dist < 0:
+            by_new = by + cap_offset
+        elif 0 <= signed_dist < fade_dist:
+            weight = 1 - (signed_dist / fade_dist)
+            by_new = by + cap_offset * weight
+        else:
+            by_new = by
+
+        top_player_id = None
+        min_feet_y = float('inf')
+        min_feet_x = None
+        min_feet_signed_dist = None
+        for track_id, (feet_x, feet_y) in mapped_player_detections[frame_idx].items():
+            # Compute signed distance for player's feet
+            num = baseline_dx * (feet_y - y0) - baseline_dy * (feet_x - x0)
+            player_signed_dist = num / denominator
+            if feet_y < min_feet_y:
+                min_feet_y = feet_y
+                min_feet_x = feet_x
+                min_feet_signed_dist = player_signed_dist
+                top_player_id = track_id
+
+        # Cap ball to player's feet
+        if (
+            top_player_id is not None and
+            abs(bx - min_feet_x) < player_x_thresh and
+            min_feet_signed_dist is not None and
+            min_feet_signed_dist < fade_dist
+        ):
+            by_new = max(by_new, min_feet_y)
+
+        adjusted_track.append((bx, by_new))
+    return adjusted_track
+
+def player_gravity_adjustment(
+    ball_track, player_detections, mapped_ball_points, mapped_player_detections,
+    bbox_thresh=200, attract_strength=0.75
+):
+    adjusted_track = []
+    for frame_idx, (ball, mapped_ball) in enumerate(zip(ball_track, mapped_ball_points)):
+        if (
+            ball is None or ball[0] is None or ball[1] is None or
+            mapped_ball is None or mapped_ball[0] is None or mapped_ball[1] is None
+        ):
+            adjusted_track.append(mapped_ball)
+            continue
+
+        bx, by = ball
+        mapped_bx, mapped_by = mapped_ball
+
+        closest_dist = float('inf')
+        closest_player_id = None
+        closest_bbox = None
+
+        # Find the closest player bbox (unmapped)
+        for track_id, bbox in player_detections[frame_idx].items():
+            x1, y1, x2, y2 = bbox
+            # Clamp ball to bbox edges to get closest point
+            closest_x = min(max(bx, x1), x2)
+            closest_y = min(max(by, y1), y2)
+            dist = np.sqrt((bx - closest_x) ** 2 + (by - closest_y) ** 2)
+            if dist < closest_dist:
+                closest_dist = dist
+                closest_player_id = track_id
+                closest_bbox = bbox
+
+        if closest_dist < bbox_thresh and closest_player_id in mapped_player_detections[frame_idx]:
+            # Proximity weight: 1 when on bbox, 0 when at threshold
+            weight = 1 - (closest_dist / bbox_thresh)
+            # Target: mapped player feet (or center)
+            mapped_px, mapped_py = mapped_player_detections[frame_idx][closest_player_id]
+            # Move mapped ball toward mapped player
+            new_bx = mapped_bx * (1 - attract_strength * weight) + mapped_px * (attract_strength * weight)
+            new_by = mapped_by * (1 - attract_strength * weight) + mapped_py * (attract_strength * weight)
+            adjusted_track.append((new_bx, new_by))
+        else:
+            adjusted_track.append(mapped_ball)
+
+    return adjusted_track
 
 '''
 Bounce sensitivity constants (for reference, default medium):
