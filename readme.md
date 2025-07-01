@@ -15,8 +15,8 @@ This project analyzes tennis match videos to detect and track the ball and playe
 1. **Clone the repository** (if you haven't already):
 
     ```bash
-    git clone <your-repo-url>
-    cd <repo-folder>
+    git clone https://github.com/samgreenfield/tennis.git
+    cd tennis
     ```
 
 2. **Install dependencies**:
@@ -24,18 +24,6 @@ This project analyzes tennis match videos to detect and track the ball and playe
     ```bash
     pip install -r requirements.txt
     ```
-
-    The main dependencies include:
-    - `torch`
-    - `opencv-python`
-    - `numpy`
-    - `tqdm`
-    - `ultralytics` (for YOLO models)
-
-3. **Download or place the required models** in the `models/` directory:
-    - `ball_model.pt`
-    - `court_model.pt`
-    - `yolo12m.pt` (or another YOLO model)
 
 ## Usage
 
@@ -47,7 +35,7 @@ This project analyzes tennis match videos to detect and track the ball and playe
     python main.py
     ```
 
-    By default, this will process `media/tennis.mp4` and output the result to `media/processed.mp4`.
+    By default, this will process `media/tennis.mp4` and output the result to `media/processed.mp4`. 
 
     **Optional arguments:**
 
@@ -63,11 +51,15 @@ This project analyzes tennis match videos to detect and track the ball and playe
     ```bash
     python main.py --input_path media/tennis.mp4 --output_path media/processed.mp4 --device cuda
     ```
+    On first run, a YOLO model is downloaded based on `player_tracking_model_path` (default YOLOv12m). When an inference is performed on ball, court, or player positions, it will be stored as a stub automatically. In future runs, the same stub will be used if it exists in `stubs/xyz_stub.pkl`.
 
-## Input and Output Videos
+## Example Input and Output
+Input:
+https://github.com/user-attachments/assets/bf89e0ff-1c1f-4921-ba31-527653238944
 
-- **Input:**  
-  `media/tennis.mp4` — Raw tennis match video.
+Output:
+https://github.com/user-attachments/assets/d19209ca-215d-4e8c-95fc-33eda524afde
 
-- **Output:**  
-  `media/processed.mp4` — Video with detected ball, players, and court overlays.
+## Credit
+Credit to @yastrebksv (https://github.com/yastrebksv) for ball and court detection pretrained models and post-processing.
+
